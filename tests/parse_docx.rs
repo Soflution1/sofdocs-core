@@ -195,7 +195,7 @@ fn render_to_html_basic() {
 
     assert!(html.contains("font-weight:bold"));
     assert!(html.contains("Hello"));
-    assert!(html.contains("<p>"));
+    assert!(html.contains("<p data-para="));
 }
 
 #[test]

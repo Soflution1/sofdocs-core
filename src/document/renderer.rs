@@ -1,12 +1,13 @@
 use super::model::Document;
 
 /// Renders a Document to an HTML string for browser display.
-/// This is the MVP renderer — canvas-based rendering comes later.
+/// Each paragraph gets `data-para="N"` and each run gets `data-run="M"`
+/// to enable DOM ↔ model position mapping.
 pub fn render_to_html(doc: &Document) -> String {
     let mut html = String::with_capacity(4096);
     html.push_str("<div class=\"sofdocs-document\">");
 
-    for paragraph in &doc.body.paragraphs {
+    for (pi, paragraph) in doc.body.paragraphs.iter().enumerate() {
         let tag = if paragraph.properties.heading_level > 0 {
             let level = paragraph.properties.heading_level.min(6);
             format!("h{level}")
@@ -16,6 +17,7 @@ pub fn render_to_html(doc: &Document) -> String {
 
         html.push('<');
         html.push_str(&tag);
+        html.push_str(&format!(" data-para=\"{pi}\""));
 
         let mut style = String::new();
         if let Some(ref align) = paragraph.properties.alignment {
@@ -32,7 +34,11 @@ pub fn render_to_html(doc: &Document) -> String {
         }
         html.push('>');
 
-        for run in &paragraph.runs {
+        if paragraph.runs.is_empty() {
+            html.push_str("<span data-run=\"0\"><br></span>");
+        }
+
+        for (ri, run) in paragraph.runs.iter().enumerate() {
             let mut span_style = String::new();
             if run.style.bold {
                 span_style.push_str("font-weight:bold;");
@@ -43,6 +49,13 @@ pub fn render_to_html(doc: &Document) -> String {
             if run.style.underline {
                 span_style.push_str("text-decoration:underline;");
             }
+            if run.style.strikethrough {
+                if span_style.contains("text-decoration:") {
+                    span_style = span_style.replace("text-decoration:underline;", "text-decoration:underline line-through;");
+                } else {
+                    span_style.push_str("text-decoration:line-through;");
+                }
+            }
             if let Some(ref font) = run.style.font_family {
                 span_style.push_str(&format!("font-family:'{font}',sans-serif;"));
             }
@@ -50,14 +63,20 @@ pub fn render_to_html(doc: &Document) -> String {
                 span_style.push_str(&format!("font-size:{size}pt;"));
             }
             if let Some(ref color) = run.style.color {
-                html.push_str(&format!("<span style=\"{span_style}color:#{color};\">"));
-            } else if !span_style.is_empty() {
-                html.push_str(&format!("<span style=\"{span_style}\">"));
-            } else {
-                html.push_str("<span>");
+                span_style.push_str(&format!("color:#{color};"));
             }
 
-            html.push_str(&html_escape(&run.text));
+            if !span_style.is_empty() {
+                html.push_str(&format!("<span data-run=\"{ri}\" style=\"{span_style}\">"));
+            } else {
+                html.push_str(&format!("<span data-run=\"{ri}\">"));
+            }
+
+            if run.text.is_empty() {
+                html.push_str("<br>");
+            } else {
+                html.push_str(&html_escape(&run.text));
+            }
             html.push_str("</span>");
         }
 
