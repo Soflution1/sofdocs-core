@@ -272,3 +272,64 @@ fn roundtrip_split_paragraph() {
     assert_eq!(reparsed.body.paragraphs[0].runs[0].text, "First line ");
     assert_eq!(reparsed.body.paragraphs[1].runs[0].text, "second line");
 }
+
+#[test]
+fn roundtrip_image_preservation() {
+    use sofdocs_core::document::model::{ImageEntry, InlineImage};
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Before</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+    let mut doc = parse_docx(&make_test_docx(xml)).unwrap();
+
+    // Add a fake image entry
+    let fake_png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF];
+    doc.images.push(ImageEntry {
+        r_id: "rId10".to_string(),
+        path: "media/image1.png".to_string(),
+        content_type: "image/png".to_string(),
+        data: fake_png.clone(),
+    });
+
+    // Add an image run
+    doc.body.paragraphs.push(sofdocs_core::document::model::Paragraph {
+        runs: vec![sofdocs_core::document::model::Run {
+            image: Some(InlineImage {
+                r_id: "rId10".to_string(),
+                width_emu: 914400,
+                height_emu: 457200,
+                description: Some("Test roundtrip img".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+
+    let saved_bytes = write_docx(&doc).unwrap();
+    let reparsed = parse_docx(&saved_bytes).unwrap();
+
+    // Image data preserved in ZIP
+    assert_eq!(reparsed.images.len(), 1);
+    assert_eq!(reparsed.images[0].data, fake_png);
+    assert_eq!(reparsed.images[0].content_type, "image/png");
+
+    // Image run preserved
+    assert_eq!(reparsed.body.paragraphs.len(), 2);
+    let img_run = &reparsed.body.paragraphs[1].runs[0];
+    assert!(img_run.image.is_some());
+    let img = img_run.image.as_ref().unwrap();
+    assert_eq!(img.r_id, "rId10");
+    assert_eq!(img.width_emu, 914400);
+    assert_eq!(img.height_emu, 457200);
+    assert_eq!(img.description, Some("Test roundtrip img".to_string()));
+}

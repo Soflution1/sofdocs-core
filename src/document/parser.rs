@@ -404,6 +404,11 @@ fn parse_document_body(xml: &str, styles: &[StyleDefinition]) -> Result<Document
     let mut current_cell: Option<TableCell> = None;
     let mut in_table = false;
 
+    // Image tracking state within a run
+    let mut in_drawing = false;
+    let mut _in_inline = false;
+    let mut current_image: Option<InlineImage> = None;
+
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
@@ -480,11 +485,56 @@ fn parse_document_body(xml: &str, styles: &[StyleDefinition]) -> Result<Document
                         current_run = Some(Run::default());
                         in_rpr = false;
                     }
-                    "rPr" if current_run.is_some() => {
+                    "rPr" if current_run.is_some() && !in_drawing => {
                         in_rpr = true;
                     }
                     "t" if current_run.is_some() => {
                         in_text = true;
+                    }
+                    // <w:drawing> -> <wp:inline> or <wp:anchor> -> ... -> <a:blip r:embed="rId...">
+                    "drawing" if current_run.is_some() => {
+                        in_drawing = true;
+                        current_image = Some(InlineImage::default());
+                    }
+                    "inline" | "anchor" if in_drawing => {
+                        _in_inline = true;
+                    }
+                    // <wp:extent cx="..." cy="..."/> — image dimensions in EMU
+                    "extent" if in_drawing => {
+                        if let Some(ref mut img) = current_image {
+                            for attr in e.attributes().flatten() {
+                                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                                let val = String::from_utf8_lossy(&attr.value);
+                                match key {
+                                    "cx" => img.width_emu = val.parse().unwrap_or(0),
+                                    "cy" => img.height_emu = val.parse().unwrap_or(0),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    // <wp:docPr name="..." descr="..."/>
+                    "docPr" if in_drawing => {
+                        if let Some(ref mut img) = current_image {
+                            for attr in e.attributes().flatten() {
+                                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                                if key == "descr" {
+                                    img.description = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                    }
+                    // <a:blip r:embed="rId4"/> — the actual image reference
+                    "blip" if in_drawing => {
+                        if let Some(ref mut img) = current_image {
+                            for attr in e.attributes().flatten() {
+                                let key = tag_local_name(attr.key.as_ref());
+                                let full_key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                                if key == "embed" || full_key == "r:embed" {
+                                    img.r_id = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                        }
                     }
                     _ if in_rpr && current_run.is_some() => {
                         if let Some(ref mut run) = current_run {
@@ -512,15 +562,32 @@ fn parse_document_body(xml: &str, styles: &[StyleDefinition]) -> Result<Document
                 match local.as_str() {
                     "body" => in_body = false,
                     "t" => in_text = false,
+                    "drawing" => {
+                        // Attach image to current run
+                        if let (Some(img), Some(ref mut run)) = (current_image.take(), &mut current_run) {
+                            if !img.r_id.is_empty() {
+                                run.image = Some(img);
+                            }
+                        }
+                        in_drawing = false;
+                        _in_inline = false;
+                    }
+                    "inline" | "anchor" => {
+                        _in_inline = false;
+                    }
                     "r" => {
                         in_text = false;
+                        in_drawing = false;
+                        _in_inline = false;
                         if let (Some(run), Some(ref mut para)) =
                             (current_run.take(), &mut current_paragraph)
                         {
-                            if !run.text.is_empty() {
+                            // Push run if it has text OR an image
+                            if !run.text.is_empty() || run.image.is_some() {
                                 para.runs.push(run);
                             }
                         }
+                        current_image = None;
                         in_rpr = false;
                     }
                     "rPr" => in_rpr = false,

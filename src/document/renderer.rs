@@ -119,14 +119,16 @@ fn determine_list_tag(para: &Paragraph, doc: &Document) -> String {
 fn render_runs(html: &mut String, runs: &[Run], doc: &Document) {
     for (ri, run) in runs.iter().enumerate() {
         if let Some(ref img) = run.image {
-            let data = find_image_data(doc, &img.r_id).unwrap_or(&img.data);
+            let (data, content_type) = find_image_info(doc, &img.r_id)
+                .unwrap_or((&img.data, &img.content_type));
             if !data.is_empty() {
                 let b64 = base64_encode(data);
                 let w_px = img.width_emu / 9525;
                 let h_px = img.height_emu / 9525;
+                let ct = if content_type.is_empty() { "image/png" } else { content_type };
                 html.push_str(&format!(
                     "<img data-run=\"{ri}\" src=\"data:{};base64,{}\" style=\"width:{}px;height:{}px;\" alt=\"{}\"/>",
-                    img.content_type,
+                    ct,
                     b64,
                     w_px,
                     h_px,
@@ -175,11 +177,11 @@ fn render_runs(html: &mut String, runs: &[Run], doc: &Document) {
     }
 }
 
-fn find_image_data<'a>(doc: &'a Document, r_id: &str) -> Option<&'a [u8]> {
+fn find_image_info<'a>(doc: &'a Document, r_id: &str) -> Option<(&'a [u8], &'a str)> {
     doc.images
         .iter()
         .find(|img| img.r_id == r_id)
-        .map(|img| img.data.as_slice())
+        .map(|img| (img.data.as_slice(), img.content_type.as_str()))
 }
 
 fn base64_encode(data: &[u8]) -> String {
