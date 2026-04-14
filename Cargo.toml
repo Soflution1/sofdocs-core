@@ -1,0 +1,24 @@
+[package]
+name = "sofdocs-core"
+version = "0.1.0"
+edition = "2021"
+description = "SofDocs core engine — OOXML parser, document model, rendering"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+quick-xml = "0.37"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+
+[features]
+default = ["native"]
+wasm = []
+native = []
+server = []
