@@ -229,11 +229,21 @@ fn numbering_xml(defs: &[NumberingDefinition]) -> String {
         }
         xml.push_str("\n  </w:abstractNum>");
 
-        // Also emit a <w:num> that references the abstractNum
-        xml.push_str(&format!(
-            "\n  <w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{}\"/></w:num>",
-            def.abstract_num_id, def.abstract_num_id
-        ));
+        // Emit <w:num> entries referencing this abstractNum
+        if def.num_ids.is_empty() {
+            // Fallback: use abstract_num_id + 1 as numId (common convention)
+            xml.push_str(&format!(
+                "\n  <w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{}\"/></w:num>",
+                def.abstract_num_id + 1, def.abstract_num_id
+            ));
+        } else {
+            for num_id in &def.num_ids {
+                xml.push_str(&format!(
+                    "\n  <w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{}\"/></w:num>",
+                    num_id, def.abstract_num_id
+                ));
+            }
+        }
     }
 
     xml.push_str("\n</w:numbering>");

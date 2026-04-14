@@ -6,6 +6,84 @@ use sofdocs_core::{parse_docx, render_to_html};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
+fn make_test_docx_with_numbering(document_xml: &str, numbering_xml: Option<&str>) -> Vec<u8> {
+    let buf = Vec::new();
+    let cursor = Cursor::new(buf);
+    let mut zip = ZipWriter::new(cursor);
+    let options = SimpleFileOptions::default();
+
+    let has_numbering = numbering_xml.is_some();
+
+    let content_types = if has_numbering {
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>"#.to_string()
+    } else {
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>"#.to_string()
+    };
+
+    zip.start_file("[Content_Types].xml", options).unwrap();
+    zip.write_all(content_types.as_bytes()).unwrap();
+
+    zip.start_file("_rels/.rels", options).unwrap();
+    zip.write_all(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#
+            .as_bytes(),
+    )
+    .unwrap();
+
+    let doc_rels = if has_numbering {
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>"#
+    } else {
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#
+    };
+
+    zip.start_file("word/_rels/document.xml.rels", options)
+        .unwrap();
+    zip.write_all(doc_rels.as_bytes()).unwrap();
+
+    zip.start_file("word/styles.xml", options).unwrap();
+    zip.write_all(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+</w:styles>"#
+            .as_bytes(),
+    )
+    .unwrap();
+
+    if let Some(num_xml) = numbering_xml {
+        zip.start_file("word/numbering.xml", options).unwrap();
+        zip.write_all(num_xml.as_bytes()).unwrap();
+    }
+
+    zip.start_file("word/document.xml", options).unwrap();
+    zip.write_all(document_xml.as_bytes()).unwrap();
+
+    let cursor = zip.finish().unwrap();
+    cursor.into_inner()
+}
+
 fn make_test_docx(document_xml: &str) -> Vec<u8> {
     let buf = Vec::new();
     let cursor = Cursor::new(buf);
@@ -332,4 +410,88 @@ fn roundtrip_image_preservation() {
     assert_eq!(img.width_emu, 914400);
     assert_eq!(img.height_emu, 457200);
     assert_eq!(img.description, Some("Test roundtrip img".to_string()));
+}
+
+#[test]
+fn roundtrip_numbering_preservation() {
+    use sofdocs_core::document::model::{NumberingDefinition, NumberingLevel, NumberingInfo};
+
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="0"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r><w:t>First item</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="0"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r><w:t>Second item</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>Not a list</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+
+    let numbering_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%1."/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>"#;
+
+    let original = parse_docx(&make_test_docx_with_numbering(doc_xml, Some(numbering_xml))).unwrap();
+
+    // Verify parse
+    assert_eq!(original.body.paragraphs.len(), 3);
+    assert!(original.body.paragraphs[0].properties.numbering.is_some());
+    assert!(original.body.paragraphs[1].properties.numbering.is_some());
+    assert!(original.body.paragraphs[2].properties.numbering.is_none());
+    assert_eq!(original.numbering_definitions.len(), 1);
+    assert_eq!(original.numbering_definitions[0].levels[0].num_fmt, "decimal");
+
+    // Write and re-parse
+    let saved_bytes = write_docx(&original).unwrap();
+    let reparsed = parse_docx(&saved_bytes).unwrap();
+
+    assert_eq!(reparsed.body.paragraphs.len(), 3);
+    assert!(reparsed.body.paragraphs[0].properties.numbering.is_some());
+    assert!(reparsed.body.paragraphs[1].properties.numbering.is_some());
+    assert!(reparsed.body.paragraphs[2].properties.numbering.is_none());
+
+    let num0 = reparsed.body.paragraphs[0].properties.numbering.as_ref().unwrap();
+    assert_eq!(num0.num_id, 1);
+    assert_eq!(num0.level, 0);
+
+    assert_eq!(reparsed.numbering_definitions.len(), 1);
+    assert_eq!(reparsed.numbering_definitions[0].levels.len(), 1);
+    assert_eq!(reparsed.numbering_definitions[0].levels[0].num_fmt, "decimal");
+    assert_eq!(reparsed.numbering_definitions[0].levels[0].start, 1);
+
+    // Verify text preserved
+    assert_eq!(reparsed.body.paragraphs[0].runs[0].text, "First item");
+    assert_eq!(reparsed.body.paragraphs[1].runs[0].text, "Second item");
+    assert_eq!(reparsed.body.paragraphs[2].runs[0].text, "Not a list");
+
+    // Verify HTML render
+    let html = render_to_html(&reparsed);
+    assert!(html.contains("<ol>") || html.contains("<ul>"));
+    assert!(html.contains("<li "));
 }

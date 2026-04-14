@@ -183,6 +183,46 @@ fn parse_numbering(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<NumberingDefi
             _ => {}
         }
     }
+
+    // Second pass: parse <w:num> entries to map numId → abstractNumId
+    let mut reader2 = Reader::from_str(&xml);
+    let mut current_num_id: Option<u32> = None;
+    loop {
+        match reader2.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local = tag_local_name(e.name().as_ref());
+                match local.as_str() {
+                    "num" => {
+                        for attr in e.attributes().flatten() {
+                            if tag_local_name(attr.key.as_ref()) == "numId" {
+                                current_num_id = String::from_utf8_lossy(&attr.value).parse().ok();
+                            }
+                        }
+                    }
+                    "abstractNumId" if current_num_id.is_some() => {
+                        for attr in e.attributes().flatten() {
+                            if tag_local_name(attr.key.as_ref()) == "val" {
+                                let abs_id: u32 = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                if let Some(def) = defs.iter_mut().find(|d| d.abstract_num_id == abs_id) {
+                                    def.num_ids.push(current_num_id.unwrap());
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                if tag_local_name(e.name().as_ref()) == "num" {
+                    current_num_id = None;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
     defs
 }
 

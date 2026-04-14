@@ -14,6 +14,8 @@ pub struct Document {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NumberingDefinition {
     pub abstract_num_id: u32,
+    /// The concrete numIds that reference this abstractNum (from `<w:num>` entries).
+    pub num_ids: Vec<u32>,
     pub levels: Vec<NumberingLevel>,
 }
 
