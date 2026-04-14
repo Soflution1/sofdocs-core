@@ -13,16 +13,259 @@ pub fn parse_docx(bytes: &[u8]) -> Result<Document> {
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor)?;
 
-    let styles = parse_styles(&mut archive)?;
+    let mut styles = parse_styles(&mut archive)?;
+    resolve_style_inheritance(&mut styles);
+
+    let rels = parse_document_rels(&mut archive);
+    let numbering_definitions = parse_numbering(&mut archive);
+    let images = extract_images(&mut archive, &rels);
 
     let document_xml = read_entry(&mut archive, "word/document.xml")?;
-    let body = parse_document_body(&document_xml, &styles)?;
+    let mut body = parse_document_body(&document_xml, &styles)?;
+
+    // Parse headers/footers referenced in document.xml
+    for (r_id, target) in &rels {
+        let path = format!("word/{target}");
+        if target.starts_with("header") {
+            if let Ok(xml) = read_entry(&mut archive, &path) {
+                let hf_body = parse_document_body(&xml, &styles)?;
+                body.headers.push(HeaderFooter {
+                    r_id: r_id.clone(),
+                    hf_type: "default".to_string(),
+                    paragraphs: hf_body.paragraphs,
+                });
+            }
+        } else if target.starts_with("footer") {
+            if let Ok(xml) = read_entry(&mut archive, &path) {
+                let hf_body = parse_document_body(&xml, &styles)?;
+                body.footers.push(HeaderFooter {
+                    r_id: r_id.clone(),
+                    hf_type: "default".to_string(),
+                    paragraphs: hf_body.paragraphs,
+                });
+            }
+        }
+    }
 
     Ok(Document {
         metadata: DocumentMetadata::default(),
         body,
         styles,
+        numbering_definitions,
+        images,
     })
+}
+
+fn parse_document_rels(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<(String, String)> {
+    let xml = match read_entry(archive, "word/_rels/document.xml.rels") {
+        Ok(xml) => xml,
+        Err(_) => return Vec::new(),
+    };
+    let mut rels = Vec::new();
+    let mut reader = Reader::from_str(&xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local = tag_local_name(e.name().as_ref());
+                if local == "Relationship" {
+                    let mut id = String::new();
+                    let mut target = String::new();
+                    for attr in e.attributes().flatten() {
+                        let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                        let val = String::from_utf8_lossy(&attr.value).to_string();
+                        match key {
+                            "Id" => id = val,
+                            "Target" => target = val,
+                            _ => {}
+                        }
+                    }
+                    if !id.is_empty() && !target.is_empty() {
+                        rels.push((id, target));
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    rels
+}
+
+fn parse_numbering(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<NumberingDefinition> {
+    let xml = match read_entry(archive, "word/numbering.xml") {
+        Ok(xml) => xml,
+        Err(_) => return Vec::new(),
+    };
+    let mut defs = Vec::new();
+    let mut reader = Reader::from_str(&xml);
+    let mut current: Option<NumberingDefinition> = None;
+    let mut current_level: Option<NumberingLevel> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local = tag_local_name(e.name().as_ref());
+                match local.as_str() {
+                    "abstractNum" => {
+                        let mut def = NumberingDefinition::default();
+                        for attr in e.attributes().flatten() {
+                            let key = tag_local_name(attr.key.as_ref());
+                            if key == "abstractNumId" {
+                                def.abstract_num_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                        }
+                        current = Some(def);
+                    }
+                    "lvl" if current.is_some() => {
+                        let mut lvl = NumberingLevel { start: 1, ..Default::default() };
+                        for attr in e.attributes().flatten() {
+                            let key = tag_local_name(attr.key.as_ref());
+                            if key == "ilvl" {
+                                lvl.level =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                        }
+                        current_level = Some(lvl);
+                    }
+                    "numFmt" if current_level.is_some() => {
+                        if let Some(ref mut lvl) = current_level {
+                            for attr in e.attributes().flatten() {
+                                if tag_local_name(attr.key.as_ref()) == "val" {
+                                    lvl.num_fmt =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                        }
+                    }
+                    "lvlText" if current_level.is_some() => {
+                        if let Some(ref mut lvl) = current_level {
+                            for attr in e.attributes().flatten() {
+                                if tag_local_name(attr.key.as_ref()) == "val" {
+                                    lvl.lvl_text =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                        }
+                    }
+                    "start" if current_level.is_some() => {
+                        if let Some(ref mut lvl) = current_level {
+                            for attr in e.attributes().flatten() {
+                                if tag_local_name(attr.key.as_ref()) == "val" {
+                                    lvl.start =
+                                        String::from_utf8_lossy(&attr.value).parse().unwrap_or(1);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let local = tag_local_name(e.name().as_ref());
+                match local.as_str() {
+                    "lvl" => {
+                        if let (Some(lvl), Some(ref mut def)) = (current_level.take(), &mut current) {
+                            def.levels.push(lvl);
+                        }
+                    }
+                    "abstractNum" => {
+                        if let Some(def) = current.take() {
+                            defs.push(def);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    defs
+}
+
+fn extract_images(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    rels: &[(String, String)],
+) -> Vec<ImageEntry> {
+    let mut images = Vec::new();
+    for (r_id, target) in rels {
+        if target.starts_with("media/") {
+            let path = format!("word/{target}");
+            if let Ok(mut file) = archive.by_name(&path) {
+                let mut data = Vec::new();
+                if file.read_to_end(&mut data).is_ok() {
+                    let content_type = if target.ends_with(".png") {
+                        "image/png"
+                    } else if target.ends_with(".jpg") || target.ends_with(".jpeg") {
+                        "image/jpeg"
+                    } else if target.ends_with(".gif") {
+                        "image/gif"
+                    } else {
+                        "application/octet-stream"
+                    };
+                    images.push(ImageEntry {
+                        r_id: r_id.clone(),
+                        path: target.clone(),
+                        content_type: content_type.to_string(),
+                        data,
+                    });
+                }
+            }
+        }
+    }
+    images
+}
+
+/// Resolve style inheritance: for each style with `based_on`, copy missing properties from parent.
+fn resolve_style_inheritance(styles: &mut Vec<StyleDefinition>) {
+    let max_depth = 10;
+    for _ in 0..max_depth {
+        let mut changed = false;
+        let snapshot = styles.clone();
+        for style in styles.iter_mut() {
+            if let Some(ref parent_id) = style.based_on {
+                if let Some(parent) = snapshot.iter().find(|s| s.style_id == *parent_id) {
+                    if !style.run_style.bold && parent.run_style.bold {
+                        style.run_style.bold = true;
+                        changed = true;
+                    }
+                    if !style.run_style.italic && parent.run_style.italic {
+                        style.run_style.italic = true;
+                        changed = true;
+                    }
+                    if !style.run_style.underline && parent.run_style.underline {
+                        style.run_style.underline = true;
+                        changed = true;
+                    }
+                    if style.run_style.font_family.is_none() && parent.run_style.font_family.is_some() {
+                        style.run_style.font_family = parent.run_style.font_family.clone();
+                        changed = true;
+                    }
+                    if style.run_style.font_size_pt.is_none() && parent.run_style.font_size_pt.is_some() {
+                        style.run_style.font_size_pt = parent.run_style.font_size_pt;
+                        changed = true;
+                    }
+                    if style.run_style.color.is_none() && parent.run_style.color.is_some() {
+                        style.run_style.color = parent.run_style.color.clone();
+                        changed = true;
+                    }
+                    if style.paragraph_properties.alignment.is_none()
+                        && parent.paragraph_properties.alignment.is_some()
+                    {
+                        style.paragraph_properties.alignment =
+                            parent.paragraph_properties.alignment.clone();
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Parse a .docx from a file path (convenience for native builds).

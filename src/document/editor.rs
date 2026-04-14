@@ -146,7 +146,7 @@ pub fn insert_text(doc: &mut Document, pos: DocPosition, text: &str) -> DocPosit
     if para.runs.is_empty() {
         para.runs.push(Run {
             text: text.to_string(),
-            style: RunStyle::default(),
+            ..Default::default()
         });
         return DocPosition {
             paragraph: pos.paragraph,
@@ -340,6 +340,7 @@ fn split_run_at(para: &mut Paragraph, offset: usize) {
             let new_run = Run {
                 text: tail_text,
                 style: para.runs[i].style.clone(),
+                image: para.runs[i].image.clone(),
             };
             para.runs.insert(i + 1, new_run);
             return;
@@ -396,6 +397,7 @@ fn extract_runs_from_offset(para: &Paragraph, start: usize, end: usize) -> Vec<R
             result.push(Run {
                 text,
                 style: run.style.clone(),
+                image: run.image.clone(),
             });
         }
 

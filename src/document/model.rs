@@ -6,6 +6,33 @@ pub struct Document {
     pub metadata: DocumentMetadata,
     pub body: DocumentBody,
     pub styles: Vec<StyleDefinition>,
+    pub numbering_definitions: Vec<NumberingDefinition>,
+    pub images: Vec<ImageEntry>,
+}
+
+/// A numbering (list) definition from numbering.xml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NumberingDefinition {
+    pub abstract_num_id: u32,
+    pub levels: Vec<NumberingLevel>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NumberingLevel {
+    pub level: u32,
+    pub num_fmt: String,
+    pub lvl_text: String,
+    pub start: u32,
+}
+
+/// An image stored inside the docx archive.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageEntry {
+    pub r_id: String,
+    pub path: String,
+    pub content_type: String,
+    #[serde(skip)]
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -21,6 +48,15 @@ pub struct DocumentMetadata {
 pub struct DocumentBody {
     pub paragraphs: Vec<Paragraph>,
     pub tables: Vec<Table>,
+    pub headers: Vec<HeaderFooter>,
+    pub footers: Vec<HeaderFooter>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HeaderFooter {
+    pub r_id: String,
+    pub hf_type: String,
+    pub paragraphs: Vec<Paragraph>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -52,11 +88,24 @@ pub struct NumberingInfo {
     pub level: u32,
 }
 
+/// Inline image embedded in a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InlineImage {
+    pub r_id: String,
+    pub content_type: String,
+    #[serde(skip)]
+    pub data: Vec<u8>,
+    pub width_emu: u64,
+    pub height_emu: u64,
+    pub description: Option<String>,
+}
+
 /// A "run" is a contiguous span of text sharing the same formatting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Run {
     pub text: String,
     pub style: RunStyle,
+    pub image: Option<InlineImage>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
