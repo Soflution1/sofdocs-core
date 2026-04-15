@@ -53,6 +53,8 @@ pub fn parse_docx(bytes: &[u8]) -> Result<Document> {
         styles,
         numbering_definitions,
         images,
+        footnotes: Vec::new(),
+        shapes: Vec::new(),
     })
 }
 
@@ -488,6 +490,11 @@ fn parse_document_body(xml: &str, styles: &[StyleDefinition]) -> Result<Document
                     "jc" if in_ppr && current_paragraph.is_some() => {
                         if let Some(ref mut para) = current_paragraph {
                             apply_paragraph_property(&mut para.properties, &local, e);
+                        }
+                    }
+                    "pageBreakBefore" if in_ppr && current_paragraph.is_some() => {
+                        if let Some(ref mut para) = current_paragraph {
+                            para.properties.page_break_before = true;
                         }
                     }
                     "numPr" if in_ppr => {}

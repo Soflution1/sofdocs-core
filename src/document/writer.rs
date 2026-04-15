@@ -35,16 +35,15 @@ pub fn write_docx(doc: &Document) -> Result<Vec<u8>> {
         zip.write_all(numbering_xml(&doc.numbering_definitions).as_bytes())?;
     }
 
-    // Write header/footer XML files
     for (i, header) in doc.body.headers.iter().enumerate() {
         let filename = format!("word/header{}.xml", i + 1);
         zip.start_file(&filename, opts)?;
-        zip.write_all(header_footer_xml(&header.paragraphs).as_bytes())?;
+        zip.write_all(header_xml(&header.paragraphs).as_bytes())?;
     }
     for (i, footer) in doc.body.footers.iter().enumerate() {
         let filename = format!("word/footer{}.xml", i + 1);
         zip.start_file(&filename, opts)?;
-        zip.write_all(header_footer_xml(&footer.paragraphs).as_bytes())?;
+        zip.write_all(footer_xml(&footer.paragraphs).as_bytes())?;
     }
 
     // Write image files into word/media/
@@ -250,7 +249,7 @@ fn numbering_xml(defs: &[NumberingDefinition]) -> String {
     xml
 }
 
-fn header_footer_xml(paragraphs: &[Paragraph]) -> String {
+fn header_xml(paragraphs: &[Paragraph]) -> String {
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
@@ -259,6 +258,18 @@ fn header_footer_xml(paragraphs: &[Paragraph]) -> String {
         write_paragraph(&mut xml, para);
     }
     xml.push_str("\n</w:hdr>");
+    xml
+}
+
+fn footer_xml(paragraphs: &[Paragraph]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+    );
+    for para in paragraphs {
+        write_paragraph(&mut xml, para);
+    }
+    xml.push_str("\n</w:ftr>");
     xml
 }
 
@@ -317,6 +328,11 @@ fn write_paragraph(xml: &mut String, para: &Paragraph) {
                 "<w:pStyle w:val=\"{}\"/>",
                 xml_escape(style_id)
             ));
+        } else if para.properties.heading_level > 0 && para.properties.heading_level <= 6 {
+            xml.push_str(&format!(
+                "<w:pStyle w:val=\"Heading{}\"/>",
+                para.properties.heading_level
+            ));
         }
         if let Some(ref alignment) = para.properties.alignment {
             xml.push_str(&format!("<w:jc w:val=\"{}\"/>", xml_escape(alignment)));
@@ -353,6 +369,9 @@ fn write_paragraph(xml: &mut String, para: &Paragraph) {
             }
             xml.push_str("/>");
         }
+        if para.properties.page_break_before {
+            xml.push_str("<w:pageBreakBefore/>");
+        }
         if let Some(ref num) = para.properties.numbering {
             xml.push_str(&format!(
                 "<w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{}\"/></w:numPr>",
@@ -363,7 +382,23 @@ fn write_paragraph(xml: &mut String, para: &Paragraph) {
     }
 
     for run in &para.runs {
-        write_run(xml, run);
+        if let Some(ref link) = run.hyperlink {
+            xml.push_str(&format!(
+                "<w:hyperlink r:id=\"\" w:history=\"1\" w:tooltip=\"{}\">",
+                xml_escape(link.tooltip.as_deref().unwrap_or(&link.url))
+            ));
+            write_run(xml, run);
+            xml.push_str("</w:hyperlink>");
+        } else {
+            write_run(xml, run);
+        }
+    }
+
+    for bk in &para.bookmarks {
+        xml.push_str(&format!(
+            "<w:bookmarkStart w:id=\"{}\" w:name=\"{}\"/><w:bookmarkEnd w:id=\"{}\"/>",
+            bk.id, xml_escape(&bk.name), bk.id
+        ));
     }
 
     xml.push_str("</w:p>");
@@ -435,10 +470,17 @@ fn write_table(xml: &mut String, table: &Table) {
         }
         for cell in &row.cells {
             xml.push_str("<w:tc>");
-            if cell.properties.width_twips.is_some() || cell.properties.shading_color.is_some() {
+            if cell.properties.width_twips.is_some() || cell.properties.shading_color.is_some() || cell.properties.vertical_merge.is_some() {
                 xml.push_str("<w:tcPr>");
                 if let Some(w) = cell.properties.width_twips {
                     xml.push_str(&format!("<w:tcW w:w=\"{w}\" w:type=\"dxa\"/>"));
+                }
+                if let Some(ref vm) = cell.properties.vertical_merge {
+                    if vm == "restart" {
+                        xml.push_str("<w:vMerge w:val=\"restart\"/>");
+                    } else {
+                        xml.push_str("<w:vMerge/>");
+                    }
                 }
                 if let Some(ref sc) = cell.properties.shading_color {
                     xml.push_str(&format!("<w:shd w:fill=\"{}\"/>", xml_escape(sc)));
@@ -539,6 +581,7 @@ fn write_run_style_xml(xml: &mut String, style: &RunStyle) {
 
 fn has_paragraph_properties(props: &ParagraphProperties) -> bool {
     props.style_id.is_some()
+        || props.heading_level > 0
         || props.alignment.is_some()
         || props.indent_left_twips.is_some()
         || props.indent_right_twips.is_some()
@@ -547,6 +590,7 @@ fn has_paragraph_properties(props: &ParagraphProperties) -> bool {
         || props.spacing_after_twips.is_some()
         || props.line_spacing_twips.is_some()
         || props.numbering.is_some()
+        || props.page_break_before
 }
 
 fn has_run_style(style: &RunStyle) -> bool {

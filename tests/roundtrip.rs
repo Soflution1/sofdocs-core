@@ -495,3 +495,172 @@ fn roundtrip_numbering_preservation() {
     assert!(html.contains("<ol>") || html.contains("<ul>"));
     assert!(html.contains("<li "));
 }
+
+#[test]
+fn test_find_replace() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Hello world hello</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Another hello here</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    let results = editor::find_text(&doc, "hello");
+    assert_eq!(results.len(), 3);
+
+    editor::replace_text_at(&mut doc, results[0].0, results[0].1, results[0].2, "HI");
+    let text: String = doc.body.paragraphs[0].runs.iter().map(|r| r.text.as_str()).collect();
+    assert!(text.contains("HI"));
+
+    let count = editor::replace_all(&mut doc, "hello", "YO");
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn test_set_heading_level() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Title paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    editor::set_heading_level(&mut doc, 0, 2);
+    assert_eq!(doc.body.paragraphs[0].properties.heading_level, 2);
+
+    let html = render_to_html(&doc);
+    assert!(html.contains("<h2"));
+
+    let written = write_docx(&doc).unwrap();
+    let reparsed = parse_docx(&written).unwrap();
+    assert_eq!(reparsed.body.paragraphs[0].properties.heading_level, 2);
+}
+
+#[test]
+fn test_toggle_list() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Item one</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    editor::toggle_list(&mut doc, 0, "bullet");
+    assert!(doc.body.paragraphs[0].properties.numbering.is_some());
+
+    editor::toggle_list(&mut doc, 0, "bullet");
+    assert!(doc.body.paragraphs[0].properties.numbering.is_none());
+}
+
+#[test]
+fn test_insert_table() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Before table</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    editor::insert_table(&mut doc, 0, 3, 4);
+    assert_eq!(doc.body.tables.len(), 1);
+    assert_eq!(doc.body.tables[0].rows.len(), 3);
+    assert_eq!(doc.body.tables[0].rows[0].cells.len(), 4);
+}
+
+#[test]
+fn test_page_break() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Before break</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    editor::insert_page_break(&mut doc, 0);
+    assert_eq!(doc.body.paragraphs.len(), 2);
+    assert!(doc.body.paragraphs[1].properties.page_break_before);
+
+    let html = render_to_html(&doc);
+    assert!(html.contains("page-break"));
+}
+
+#[test]
+fn test_hyperlink_and_bookmark() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Click here for info</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    editor::insert_hyperlink(&mut doc, 0, 6, 10, "https://example.com");
+    let has_link = doc.body.paragraphs[0].runs.iter().any(|r| r.hyperlink.is_some());
+    assert!(has_link);
+
+    let html = render_to_html(&doc);
+    assert!(html.contains("href=\"https://example.com\""));
+
+    editor::insert_bookmark(&mut doc, 0, 0, "my_bookmark");
+    assert_eq!(doc.body.paragraphs[0].bookmarks.len(), 1);
+    assert_eq!(doc.body.paragraphs[0].bookmarks[0].name, "my_bookmark");
+}
+
+#[test]
+fn test_indent_and_spacing() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Indented paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    editor::set_indent(&mut doc, 0, 720, 0, 360);
+    assert_eq!(doc.body.paragraphs[0].properties.indent_left_twips, Some(720));
+    assert_eq!(doc.body.paragraphs[0].properties.indent_first_line_twips, Some(360));
+
+    editor::set_spacing(&mut doc, 0, 120, 240, 276);
+    assert_eq!(doc.body.paragraphs[0].properties.spacing_before_twips, Some(120));
+    assert_eq!(doc.body.paragraphs[0].properties.spacing_after_twips, Some(240));
+    assert_eq!(doc.body.paragraphs[0].properties.line_spacing_twips, Some(276));
+
+    let written = write_docx(&doc).unwrap();
+    let reparsed = parse_docx(&written).unwrap();
+    assert_eq!(reparsed.body.paragraphs[0].properties.indent_left_twips, Some(720));
+}
+
+#[test]
+fn test_clear_formatting() {
+    let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:rPr><w:b/><w:i/><w:u w:val="single"/></w:rPr><w:t>Styled text</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+    let bytes = make_test_docx(doc_xml);
+    let mut doc = parse_docx(&bytes).unwrap();
+
+    assert!(doc.body.paragraphs[0].runs[0].style.bold);
+
+    let sel = DocSelection {
+        start: DocPosition { paragraph: 0, offset: 0 },
+        end: DocPosition { paragraph: 0, offset: 11 },
+    };
+    editor::apply_style(&mut doc, sel, &StyleChange::ClearFormatting);
+    assert!(!doc.body.paragraphs[0].runs[0].style.bold);
+    assert!(!doc.body.paragraphs[0].runs[0].style.italic);
+}

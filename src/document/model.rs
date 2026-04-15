@@ -8,6 +8,8 @@ pub struct Document {
     pub styles: Vec<StyleDefinition>,
     pub numbering_definitions: Vec<NumberingDefinition>,
     pub images: Vec<ImageEntry>,
+    pub footnotes: Vec<Footnote>,
+    pub shapes: Vec<Shape>,
 }
 
 /// A numbering (list) definition from numbering.xml.
@@ -65,6 +67,7 @@ pub struct HeaderFooter {
 pub struct Paragraph {
     pub properties: ParagraphProperties,
     pub runs: Vec<Run>,
+    pub bookmarks: Vec<Bookmark>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -82,6 +85,8 @@ pub struct ParagraphProperties {
     pub line_spacing_twips: Option<u32>,
     /// Numbered or bulleted list info
     pub numbering: Option<NumberingInfo>,
+    /// Page break before this paragraph
+    pub page_break_before: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,12 +107,43 @@ pub struct InlineImage {
     pub description: Option<String>,
 }
 
+/// Hyperlink attached to a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HyperlinkInfo {
+    pub url: String,
+    pub tooltip: Option<String>,
+}
+
+/// Bookmark marker in a paragraph.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub id: u32,
+    pub name: String,
+}
+
+/// Shape placeholder.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Shape {
+    pub shape_type: String,
+    pub width_emu: u64,
+    pub height_emu: u64,
+    pub text: String,
+}
+
+/// Footnote entry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Footnote {
+    pub id: u32,
+    pub paragraphs: Vec<Paragraph>,
+}
+
 /// A "run" is a contiguous span of text sharing the same formatting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Run {
     pub text: String,
     pub style: RunStyle,
     pub image: Option<InlineImage>,
+    pub hyperlink: Option<HyperlinkInfo>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

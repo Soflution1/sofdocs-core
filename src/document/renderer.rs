@@ -29,6 +29,33 @@ pub fn render_to_html(doc: &Document) -> String {
         html.push_str("</table>");
     }
 
+    // Shapes stubs
+    for shape in &doc.shapes {
+        html.push_str(&format!(
+            "<div class=\"shape-placeholder\" style=\"border:2px dashed #999;padding:12px;margin:8px 0;text-align:center;color:#666;font-size:11px;border-radius:4px;width:{}px;min-height:{}px;display:flex;align-items:center;justify-content:center;\"><span>Shape: {} — {}</span></div>",
+            shape.width_emu / 9525,
+            shape.height_emu / 9525,
+            html_escape(&shape.shape_type),
+            if shape.text.is_empty() { "(no text)" } else { &shape.text }
+        ));
+    }
+
+    // Footnotes stubs
+    if !doc.footnotes.is_empty() {
+        html.push_str("<hr style=\"margin-top:24px;border:none;border-top:1px solid #ccc;\"/>");
+        html.push_str("<div class=\"footnotes\" style=\"font-size:9pt;color:#666;\">");
+        for note in &doc.footnotes {
+            html.push_str(&format!("<div class=\"footnote\" id=\"fn-{}\"><sup>{}</sup> ", note.id, note.id));
+            for para in &note.paragraphs {
+                for run in &para.runs {
+                    html.push_str(&html_escape(&run.text));
+                }
+            }
+            html.push_str("</div>");
+        }
+        html.push_str("</div>");
+    }
+
     html.push_str("</div>");
     html
 }
@@ -54,6 +81,10 @@ fn render_paragraphs(html: &mut String, paragraphs: &[Paragraph], doc: &Document
         } else {
             if let Some(ref tag) = list_open.take() {
                 html.push_str(&format!("</{tag}>"));
+            }
+
+            if paragraph.properties.page_break_before {
+                html.push_str("<div class=\"page-break\" style=\"page-break-before:always;border-top:1px dashed #ccc;margin:16px 0;\"></div>");
             }
 
             let tag = if paragraph.properties.heading_level > 0 {
@@ -138,6 +169,15 @@ fn render_runs(html: &mut String, runs: &[Run], doc: &Document) {
             continue;
         }
 
+        let is_link = run.hyperlink.is_some();
+        if is_link {
+            let link = run.hyperlink.as_ref().unwrap();
+            html.push_str(&format!(
+                "<a href=\"{}\" data-run=\"{ri}\" target=\"_blank\" rel=\"noopener\" style=\"color:#0563C1;text-decoration:underline;\">",
+                html_escape(&link.url)
+            ));
+        }
+
         let mut span_style = String::new();
         if run.style.bold {
             span_style.push_str("font-weight:bold;");
@@ -161,10 +201,25 @@ fn render_runs(html: &mut String, runs: &[Run], doc: &Document) {
         if let Some(ref color) = run.style.color {
             span_style.push_str(&format!("color:#{color};"));
         }
+        if let Some(ref highlight) = run.style.highlight {
+            let css_color = highlight_to_css(highlight);
+            span_style.push_str(&format!("background-color:{css_color};"));
+        }
+
+        let use_sub_sup = run.style.vertical_align.is_some();
+        let sub_sup_tag = match &run.style.vertical_align {
+            Some(super::model::VerticalAlign::Superscript) => "sup",
+            Some(super::model::VerticalAlign::Subscript) => "sub",
+            None => "",
+        };
+
+        if use_sub_sup {
+            html.push_str(&format!("<{sub_sup_tag}>"));
+        }
 
         if !span_style.is_empty() {
             html.push_str(&format!("<span data-run=\"{ri}\" style=\"{span_style}\">"));
-        } else {
+        } else if !is_link {
             html.push_str(&format!("<span data-run=\"{ri}\">"));
         }
 
@@ -173,7 +228,39 @@ fn render_runs(html: &mut String, runs: &[Run], doc: &Document) {
         } else {
             html.push_str(&html_escape(&run.text));
         }
-        html.push_str("</span>");
+
+        if !span_style.is_empty() || !is_link {
+            html.push_str("</span>");
+        }
+
+        if use_sub_sup {
+            html.push_str(&format!("</{sub_sup_tag}>"));
+        }
+        if is_link {
+            html.push_str("</a>");
+        }
+    }
+}
+
+fn highlight_to_css(ooxml_color: &str) -> &str {
+    match ooxml_color {
+        "yellow" => "#FFFF00",
+        "green" => "#00FF00",
+        "cyan" => "#00FFFF",
+        "magenta" => "#FF00FF",
+        "blue" => "#0000FF",
+        "red" => "#FF0000",
+        "darkBlue" => "#00008B",
+        "darkCyan" => "#008B8B",
+        "darkGreen" => "#006400",
+        "darkMagenta" => "#8B008B",
+        "darkRed" => "#8B0000",
+        "darkYellow" => "#808000",
+        "darkGray" => "#A9A9A9",
+        "lightGray" => "#D3D3D3",
+        "black" => "#000000",
+        "white" => "#FFFFFF",
+        _ => ooxml_color,
     }
 }
 

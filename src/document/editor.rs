@@ -66,9 +66,13 @@ pub enum StyleChange {
     ToggleItalic,
     ToggleUnderline,
     ToggleStrikethrough,
+    ToggleSuperscript,
+    ToggleSubscript,
     SetFontFamily(String),
     SetFontSize(f32),
     SetColor(String),
+    SetHighlight(String),
+    ClearFormatting,
 }
 
 /// Undo/redo stack holding edit operations.
@@ -244,10 +248,10 @@ pub fn split_paragraph(doc: &mut Document, pos: DocPosition) {
         total_len,
     );
 
-    // Create new paragraph with tail content
     let new_para = Paragraph {
         properties: doc.body.paragraphs[pos.paragraph].properties.clone(),
         runs: tail_runs,
+        bookmarks: Vec::new(),
     };
 
     doc.body.paragraphs.insert(pos.paragraph + 1, new_para);
@@ -313,9 +317,25 @@ fn apply_style_change(style: &mut RunStyle, change: &StyleChange) {
         StyleChange::ToggleItalic => style.italic = !style.italic,
         StyleChange::ToggleUnderline => style.underline = !style.underline,
         StyleChange::ToggleStrikethrough => style.strikethrough = !style.strikethrough,
+        StyleChange::ToggleSuperscript => {
+            style.vertical_align = match style.vertical_align {
+                Some(VerticalAlign::Superscript) => None,
+                _ => Some(VerticalAlign::Superscript),
+            };
+        }
+        StyleChange::ToggleSubscript => {
+            style.vertical_align = match style.vertical_align {
+                Some(VerticalAlign::Subscript) => None,
+                _ => Some(VerticalAlign::Subscript),
+            };
+        }
         StyleChange::SetFontFamily(f) => style.font_family = Some(f.clone()),
         StyleChange::SetFontSize(s) => style.font_size_pt = Some(*s),
         StyleChange::SetColor(c) => style.color = Some(c.clone()),
+        StyleChange::SetHighlight(h) => style.highlight = Some(h.clone()),
+        StyleChange::ClearFormatting => {
+            *style = RunStyle::default();
+        }
     }
 }
 
@@ -341,6 +361,7 @@ fn split_run_at(para: &mut Paragraph, offset: usize) {
                 text: tail_text,
                 style: para.runs[i].style.clone(),
                 image: para.runs[i].image.clone(),
+                hyperlink: para.runs[i].hyperlink.clone(),
             };
             para.runs.insert(i + 1, new_run);
             return;
@@ -366,6 +387,7 @@ fn extract_paragraph_range(para: &Paragraph, start: usize, end: usize) -> Paragr
     Paragraph {
         properties: para.properties.clone(),
         runs,
+        bookmarks: Vec::new(),
     }
 }
 
@@ -398,6 +420,7 @@ fn extract_runs_from_offset(para: &Paragraph, start: usize, end: usize) -> Vec<R
                 text,
                 style: run.style.clone(),
                 image: run.image.clone(),
+                hyperlink: run.hyperlink.clone(),
             });
         }
 
@@ -429,6 +452,175 @@ pub fn redo(doc: &mut Document, undo_stack: &mut UndoStack) -> bool {
     let inverse = execute_inverse(doc, &op);
     undo_stack.undo.push(inverse);
     true
+}
+
+/// Set paragraph indentation (values in twips).
+pub fn set_indent(doc: &mut Document, paragraph: usize, left: i32, right: i32, first_line: i32) {
+    if paragraph >= doc.body.paragraphs.len() { return; }
+    let props = &mut doc.body.paragraphs[paragraph].properties;
+    props.indent_left_twips = if left != 0 { Some(left) } else { None };
+    props.indent_right_twips = if right != 0 { Some(right) } else { None };
+    props.indent_first_line_twips = if first_line != 0 { Some(first_line) } else { None };
+}
+
+/// Set paragraph spacing (values in twips, line in 240ths of a line).
+pub fn set_spacing(doc: &mut Document, paragraph: usize, before: u32, after: u32, line: u32) {
+    if paragraph >= doc.body.paragraphs.len() { return; }
+    let props = &mut doc.body.paragraphs[paragraph].properties;
+    props.spacing_before_twips = if before != 0 { Some(before) } else { None };
+    props.spacing_after_twips = if after != 0 { Some(after) } else { None };
+    props.line_spacing_twips = if line != 0 { Some(line) } else { None };
+}
+
+/// Set heading level (0 = normal, 1-6 = heading).
+pub fn set_heading_level(doc: &mut Document, paragraph: usize, level: u8) {
+    if paragraph >= doc.body.paragraphs.len() { return; }
+    doc.body.paragraphs[paragraph].properties.heading_level = level.min(6);
+    if level > 0 {
+        doc.body.paragraphs[paragraph].properties.style_id = None;
+    }
+}
+
+/// Toggle list on a paragraph. list_type: "bullet" or "decimal".
+pub fn toggle_list(doc: &mut Document, paragraph: usize, list_type: &str) {
+    if paragraph >= doc.body.paragraphs.len() { return; }
+    let props = &mut doc.body.paragraphs[paragraph].properties;
+
+    if props.numbering.is_some() {
+        props.numbering = None;
+        return;
+    }
+
+    let num_fmt = list_type.to_string();
+    let abs_id = doc.numbering_definitions.len() as u32;
+    let num_id = abs_id + 1;
+
+    let existing = doc.numbering_definitions.iter().find(|d| {
+        d.levels.first().map(|l| l.num_fmt.as_str()) == Some(list_type)
+    });
+
+    let actual_num_id = if let Some(def) = existing {
+        def.num_ids.first().copied().unwrap_or(def.abstract_num_id + 1)
+    } else {
+        doc.numbering_definitions.push(NumberingDefinition {
+            abstract_num_id: abs_id,
+            num_ids: vec![num_id],
+            levels: vec![NumberingLevel {
+                level: 0,
+                num_fmt,
+                lvl_text: if list_type == "bullet" { "•".to_string() } else { "%1.".to_string() },
+                start: 1,
+            }],
+        });
+        num_id
+    };
+
+    props.numbering = Some(NumberingInfo { num_id: actual_num_id, level: 0 });
+}
+
+/// Find all occurrences of a text query. Returns Vec of (para_idx, char_offset, length).
+pub fn find_text(doc: &Document, query: &str) -> Vec<(usize, usize, usize)> {
+    let mut results = Vec::new();
+    if query.is_empty() { return results; }
+
+    let query_lower = query.to_lowercase();
+    for (pi, para) in doc.body.paragraphs.iter().enumerate() {
+        let full_text: String = para.runs.iter().map(|r| r.text.as_str()).collect();
+        let full_lower = full_text.to_lowercase();
+        let mut search_from = 0;
+        while let Some(pos) = full_lower[search_from..].find(&query_lower) {
+            let abs_pos = search_from + pos;
+            results.push((pi, abs_pos, query.len()));
+            search_from = abs_pos + 1;
+        }
+    }
+    results
+}
+
+/// Replace text at a specific location.
+pub fn replace_text_at(doc: &mut Document, para: usize, offset: usize, len: usize, replacement: &str) {
+    if para >= doc.body.paragraphs.len() { return; }
+    let sel = DocSelection {
+        start: DocPosition { paragraph: para, offset },
+        end: DocPosition { paragraph: para, offset: offset + len },
+    };
+    delete_range(doc, sel);
+    insert_text(doc, DocPosition { paragraph: para, offset }, replacement);
+}
+
+/// Replace all occurrences. Returns count of replacements.
+pub fn replace_all(doc: &mut Document, query: &str, replacement: &str) -> usize {
+    let mut count = 0;
+    loop {
+        let matches = find_text(doc, query);
+        if matches.is_empty() { break; }
+        let (para, offset, len) = matches[0];
+        replace_text_at(doc, para, offset, len, replacement);
+        count += 1;
+    }
+    count
+}
+
+/// Insert a table after a given paragraph.
+pub fn insert_table(doc: &mut Document, _after_paragraph: usize, rows: usize, cols: usize) {
+    let mut table_rows = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        let mut cells = Vec::with_capacity(cols);
+        for _ in 0..cols {
+            cells.push(TableCell {
+                paragraphs: vec![Paragraph::default()],
+                ..Default::default()
+            });
+        }
+        table_rows.push(TableRow { cells, ..Default::default() });
+    }
+    doc.body.tables.push(Table {
+        rows: table_rows,
+        ..Default::default()
+    });
+}
+
+/// Insert a page break before a paragraph.
+pub fn insert_page_break(doc: &mut Document, paragraph: usize) {
+    if paragraph >= doc.body.paragraphs.len() {
+        doc.body.paragraphs.push(Paragraph {
+            properties: ParagraphProperties { page_break_before: true, ..Default::default() },
+            ..Default::default()
+        });
+        return;
+    }
+    let pos = DocPosition { paragraph, offset: 0 };
+    split_paragraph(doc, pos);
+    doc.body.paragraphs[paragraph + 1].properties.page_break_before = true;
+}
+
+/// Insert a hyperlink on a run range.
+pub fn insert_hyperlink(doc: &mut Document, para: usize, start_offset: usize, end_offset: usize, url: &str) {
+    if para >= doc.body.paragraphs.len() { return; }
+    split_runs_at_boundaries(&mut doc.body.paragraphs[para], start_offset, end_offset);
+    let paragraph = &mut doc.body.paragraphs[para];
+    let mut char_pos = 0;
+    for run in &mut paragraph.runs {
+        let run_end = char_pos + run.text.len();
+        if char_pos >= start_offset && run_end <= end_offset && !run.text.is_empty() {
+            run.hyperlink = Some(HyperlinkInfo { url: url.to_string(), tooltip: None });
+        }
+        char_pos = run_end;
+    }
+}
+
+/// Insert a bookmark at a position.
+pub fn insert_bookmark(doc: &mut Document, para: usize, _offset: usize, name: &str) {
+    if para >= doc.body.paragraphs.len() { return; }
+    let max_id = doc.body.paragraphs.iter()
+        .flat_map(|p| p.bookmarks.iter())
+        .map(|b| b.id)
+        .max()
+        .unwrap_or(0);
+    doc.body.paragraphs[para].bookmarks.push(Bookmark {
+        id: max_id + 1,
+        name: name.to_string(),
+    });
 }
 
 fn execute_inverse(doc: &mut Document, op: &EditOp) -> EditOp {
